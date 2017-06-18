@@ -1,0 +1,192 @@
+/*
+ * Copyright 2014 Indiana University
+ * 
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package edu.iu.harp.client;
+
+import java.io.IOException;
+
+import org.apache.log4j.Logger;
+
+import edu.iu.harp.io.Connection;
+import edu.iu.harp.io.ConnectionPool;
+import edu.iu.harp.io.Constants;
+import edu.iu.harp.io.Data;
+import edu.iu.harp.io.IOUtils;
+import edu.iu.harp.io.Serializer;
+import edu.iu.harp.resource.ResourcePool;
+import edu.iu.harp.trans.ByteArray;
+import edu.iu.harp.worker.WorkerInfo;
+import edu.iu.harp.worker.Workers;
+
+/**
+ * We don't allow the worker broadcasts to itself.
+ */
+public class DataMSTBcastSender extends
+  DataSender {
+  /** Class logger */
+  private static final Logger LOG = Logger
+    .getLogger(DataMSTBcastSender.class);
+
+  public DataMSTBcastSender(Data data,
+    Workers workers, ResourcePool pool,
+    byte command) {
+    super(data, getDestID(workers.getSelfID(),
+      workers.getMinID(), workers.getMiddleID(),
+      workers.getMaxID()), workers, pool, command);
+  }
+
+  private static int getDestID(int selfID,
+    int left, int middle, int right) {
+    int half = middle - left + 1;
+    int destID =
+      (selfID <= middle ? (selfID + half)
+        : (selfID - half));
+    // destID may be greater than right
+    // but won't be less than left
+    if (destID > right) {
+      destID = right;
+    }
+    if (selfID == destID) {
+      return Constants.UNKNOWN_WORKER_ID;
+    } else {
+      return destID;
+    }
+  }
+
+  protected ByteArray getOPByteArray(
+    int headArrSize, int bodyArrSize) {
+    byte[] opBytes =
+      getResourcePool().getBytes(16);
+    try {
+      Serializer serializer =
+        new Serializer(new ByteArray(opBytes, 0,
+          16));
+      serializer.writeInt(headArrSize);
+      serializer.writeInt(bodyArrSize);
+    } catch (Exception e) {
+      getResourcePool().releaseBytes(opBytes);
+      return null;
+    }
+    return new ByteArray(opBytes, 0, 16);
+  }
+
+  protected void sendDataBytes(Connection conn,
+    final ByteArray opArray, final Data data)
+    throws IOException {
+    // Send data to other workers
+    int selfID = getWorkers().getSelfID();
+    int left = getWorkers().getMinID();
+    int middle = getWorkers().getMiddleID();
+    int right = getWorkers().getMaxID();
+    int destID = getDestWorkerID();
+    int destLeft = left;
+    int destRight = right;
+    // Get dest's left and right
+    // and self's new left and right
+    if (selfID > middle) {
+      // Destination ID is at the left side
+      destRight = middle;
+      left = middle + 1;
+    } else {
+      // Destination ID is at the right side
+      destLeft = middle + 1;
+      right = middle;
+    }
+    // Update middle
+    middle = (left + right) / 2;
+    // Define new half
+    int half = middle - left + 1;
+    // LOG.info("MST Dest ID " + destID + " "
+    // + destLeft + " " + destRight);
+    Serializer serializer =
+      new Serializer(new ByteArray(
+        opArray.getArray(), 8, 16));
+    try {
+      serializer.writeInt(destLeft);
+      serializer.writeInt(destRight);
+    } catch (IOException e) {
+      LOG.error("Fail to serialize on op array.",
+        e);
+      throw e;
+    }
+    try {
+      super.sendDataBytes(conn, opArray, data);
+    } catch (IOException e) {
+      LOG.error("Fail to send data bytes.", e);
+      throw e;
+    }
+    // Send to other workers in MST
+    while (left < right) {
+      // Update new range
+      // Update new destination
+      // LOG.info("MST Range " + left + " " +
+      // middle + " " + right);
+      if (selfID <= middle) {
+        destID = selfID + half;
+        if (destID > right) {
+          destID = right;
+        }
+        destLeft = middle + 1;
+        destRight = right;
+        right = middle;
+      } else {
+        // destID won't be less than left
+        destID = selfID - half;
+        destLeft = left;
+        destRight = middle;
+        left = middle + 1;
+      }
+      middle = (left + right) / 2;
+      half = middle - left + 1;
+      // LOG.info("MST Dest ID " + destID + " "
+      // + destLeft + " " + destRight);
+      serializer =
+        new Serializer(new ByteArray(
+          opArray.getArray(), 8, 16));
+      try {
+        serializer.writeInt(destLeft);
+        serializer.writeInt(destRight);
+      } catch (IOException e) {
+        LOG.error(
+          "Fail to serialize to op array.", e);
+        continue;
+      }
+      // Send data to destination
+      WorkerInfo destWorker =
+        getWorkers().getWorkerInfo(destID);
+      if (destWorker != null) {
+        Connection destConn =
+          IOUtils.getConnection(
+            destWorker.getNode(),
+            destWorker.getPort());
+        if (destConn != null) {
+          try {
+            super.sendDataBytes(destConn,
+              opArray, data);
+            ConnectionPool
+              .releaseConnection(destConn);
+          } catch (IOException e) {
+            LOG.error("Fail to send data bytes.",
+              e);
+            ConnectionPool
+              .removeConnection(destConn);
+            continue;
+          }
+        }
+      }
+    }
+  }
+}

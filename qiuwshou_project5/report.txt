@@ -1,0 +1,1 @@
+The inverse index can be stored in a <key, value> pair. The key is a word in a document. While the value contains the documentID and the frequency of the word appearing in the document. We get the frequency of the word by using getTermFreqs function. And we get the documentID from the constants. 

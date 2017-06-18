@@ -1,0 +1,17 @@
+Transformation of data during the computations, i.e. data type of key, value
+The data structure used to transfer between Map and Reduce phases
+How the data flow happens through disk and memory during the computation
+
+1.In the map function, i use <key, value> to store the data, in which all the value is 
+mapped to one key. Since i failed to partition the map task, the code basically runs in 
+sequentially. And in the reduce function, i create 4 <key, value> pairs to store the value
+of min, max, std and average. All the key has the data type of text, while all the value 
+has the data type of double. And the value is passed from map to reduce in the from of 
+DoubleWritable. 
+
+2. Input data is stored on the HDFS. Datenode represents the partitioned data blocks, and 
+namenode will assign id for each data block. The data stored in the datanode will be 
+assigned to a computation by jobtracker and tasktracker will report the process of execution
+to jobtracker so that it can allocate the resources. A combiner will summarize the output of 
+computation under the same key in the pairs. In the end, reducer will combine all the 
+information together to produce the final result
